@@ -8,7 +8,7 @@
 > by an AI coding assistant (Claude Code) through conversation. The author designed the
 > features and workflow, directed the work, and tested the plug-in in Maya.
 
-**Demo video:** [watch on Google Drive](https://drive.google.com/file/d/1OQWvfce-O8TXCdGhohfJKjc74lHyTWDo/view?usp=drive_link)
+**Demo video:** [watch on Google Drive](https://drive.google.com/file/d/1OQWvfce-O8TXCdGhohfJKjc74lHyTWDo/view?usp=sharing) (requires an NYU Google account)
 
 A Maya plug-in that prepares Mixamo animations for Unreal Engine: add a root bone,
 turn in-place motion into root motion, and fix hands and feet with temporary IK —
