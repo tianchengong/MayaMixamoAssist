@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>From Mixamo to Unreal</title>
+<style>
+  :root{--bg:#F7E7C8}
+  html,body{margin:0;height:100%;overflow:hidden;background:var(--bg)}
+  body{font-family:"Segoe UI","Helvetica Neue",Helvetica,Arial,sans-serif;color:var(--ink)}
+  body.idle{cursor:none}
+  #stage{position:absolute;left:50%;top:50%;width:1920px;height:1080px;transform-origin:50% 50%;overflow:hidden;background:var(--bg)}
+  #stage svg{position:absolute;left:0;top:0;width:1920px;height:1080px;overflow:hidden}
+  svg text{font-family:inherit}
+  #grain{position:absolute;inset:0;pointer-events:none;mix-blend-mode:multiply;opacity:.55;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='320' height='320'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .42 0 0 0 0 .35 0 0 0 0 .22 1.1 0 0 0 -.42'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+  .title{position:absolute;left:0;right:0;top:50px;text-align:center;font-size:52px;font-weight:700;letter-spacing:.01em}
+  .cap{position:absolute;left:0;right:0;top:922px;text-align:center;font-size:42px;font-weight:500;opacity:0}
+  #back{position:fixed;top:14px;left:18px;font-size:15px;color:var(--sub);text-decoration:none;opacity:0;transition:opacity .3s}
+  body.ui #back{opacity:1}
+
+</style>
+</head>
+<body>
+<a id="back" href="index.html">&larr; index</a>
+<div id="stage">
+  <svg id="svg" viewBox="0 0 1920 1080"></svg>
+  <div class="title">From Mixamo to Unreal</div>
+  <div id="grain"></div>
+</div>
+<script>
+/* ---------- shared core (same in every page) ---------- */
+const C={bg:'#F7E7C8',wall:'#F2DDBA',floor:'#EED6AE',ink:'#3A2C28',sub:'#8A7864',line:'#D9C3A0',paper:'#FDF7EA',
+         skin:'#F5CDB0',skin2:'#E3B597',cheek:'#EE9A98',eye:'#A3CC9C',hair:'#FDF9F1',hairLine:'#D2C0AC',
+         sweater:'#AEBC9E',sleeve:'#9CAD8C',sleeve2:'#86967A',stripe:'#F6F1E2',pants:'#8E6B5C',pants2:'#6F5247',shoe:'#4A3833',gray:'#A39E94',
+         boneSpine:'#9D84DA',boneArm:'#C66A57',boneLeg:'#7E9BE2',
+         root:'#D8392B',ik:'#3554C2',fk:'#C23A78',mod:'#1F8F7C',hips:'#E58A2E',star:'#E8B92E'};
+for(const k in C)document.documentElement.style.setProperty('--'+k,C[k]);
+const W=1920,H=1080,NS='http://www.w3.org/2000/svg',stage=document.getElementById('stage'),svg=document.getElementById('svg');
+function el(tag,a,parent){const e=document.createElementNS(NS,tag);set(e,a||{});(parent||svg).appendChild(e);return e}
+function set(e,a){for(const k in a)e.setAttribute(k,a[k]);return e}
+const clamp=(x,a=0,b=1)=>Math.min(b,Math.max(a,x)),lerp=(a,b,u)=>a+(b-a)*u,seg=(t,a,b)=>clamp((t-a)/(b-a));
+const smooth=u=>u*u*(3-2*u),ease=u=>u<.5?4*u*u*u:1-Math.pow(-2*u+2,3)/2;
+const backOut=u=>{const s=1.7;u-=1;return u*u*((s+1)*u+s)+1};
+const win=(t,a,b,f=.35)=>Math.min(seg(t,a,a+f),1-seg(t,b-f,b));
+const D2R=Math.PI/180;
+function fit(){const s=Math.min(innerWidth/W,innerHeight/H);stage.style.transform=`translate(-50%,-50%) scale(${s})`}
+addEventListener('resize',fit);fit();
+function captions(list,cls){return list.map(([a,b,txt])=>{const d=document.createElement('div');d.className='cap'+(cls?' '+cls:'');d.textContent=txt;stage.appendChild(d);return{d,a,b}})}
+function showCaps(caps,t){for(const c of caps)c.d.style.opacity=win(t,c.a,c.b,.4).toFixed(3)}
+function run(DUR,render){
+  const q=new URLSearchParams(location.search);let fixed=q.has('t')?parseFloat(q.get('t')):null;
+  let t0=performance.now(),paused=false,pt=0;
+  window.__anim={dur:DUR,seek(t){fixed=t;render(t)}};   // used by the video exporter to step frame by frame
+  addEventListener('keydown',e=>{
+    if(e.code==='Space'){paused=!paused;if(paused)pt=(performance.now()-t0)/1000;else t0=performance.now()-pt*1000;e.preventDefault()}
+    if(e.key==='r'||e.key==='R'){t0=performance.now();pt=0}
+  });
+  (function loop(now){render(fixed!==null?fixed:((paused?pt:(now-t0)/1000)%DUR));requestAnimationFrame(loop)})(performance.now());
+}
+let idleTimer;addEventListener('mousemove',()=>{document.body.classList.add('ui');document.body.classList.remove('idle');
+  clearTimeout(idleTimer);idleTimer=setTimeout(()=>{document.body.classList.remove('ui');document.body.classList.add('idle')},1800)});
+/* two-bone IK in y-up coords; side=+1 puts the middle joint on the left of the root->target line, -1 on the right */
+function ik2(sx,sy,tx,ty,L1,L2,side){
+  let dx=tx-sx,dy=ty-sy,d=Math.hypot(dx,dy);const dm=(L1+L2)*.999;
+  if(d>dm){dx*=dm/d;dy*=dm/d;d=dm}d=Math.max(d,Math.abs(L1-L2)+1e-3);
+  const th=Math.atan2(dy,dx)+side*Math.acos(clamp((L1*L1+d*d-L2*L2)/(2*L1*d),-1,1));
+  return{ex:sx+L1*Math.cos(th),ey:sy+L1*Math.sin(th),hx:sx+dx,hy:sy+dy};
+}
+function diamond(x,y,r){return `${x},${y-r} ${x+r},${y} ${x},${y+r} ${x-r},${y}`}
+/* paper backdrop: soft wall panels and an optional floor plane */
+function backdrop(floorY){
+  const g=el('g',{});
+  [[150,90],[420,40],[1240,120],[1560,60],[1700,30]].forEach(([x,w],i)=>el('rect',{x,y:0,width:w,height:1080,fill:i%2?C.paper:C.wall,opacity:.4},g));
+  el('path',{d:'M36,880 V1044 H210 M1884,200 V36 H1710',fill:'none',stroke:C.fk,'stroke-width':3,opacity:.45},g);
+  if(floorY!==undefined){el('rect',{x:0,y:floorY,width:1920,height:1080-floorY,fill:C.floor},g);
+    el('polygon',{points:`0,${floorY} 760,${floorY} 1300,1080 0,1080`,fill:C.wall,opacity:.35},g)}
+  return g;
+}
+/* ---------- geometric character pieces (y-up coords, mapped to screen by a mapper) ---------- */
+function quadPts(p0,p1,w0,w1){
+  const dx=p1.x-p0.x,dy=p1.y-p0.y,l=Math.hypot(dx,dy)||1,nx=-dy/l,ny=dx/l;
+  return[{x:p0.x+nx*w0/2,y:p0.y+ny*w0/2},{x:p1.x+nx*w1/2,y:p1.y+ny*w1/2},{x:p1.x-nx*w1/2,y:p1.y-ny*w1/2},{x:p0.x-nx*w0/2,y:p0.y-ny*w0/2}];
+}
+function bonePts(p0,p1,hw){
+  const dx=p1.x-p0.x,dy=p1.y-p0.y,l=Math.hypot(dx,dy)||1,nx=-dy/l,ny=dx/l;
+  return[{x:p0.x+nx*hw,y:p0.y+ny*hw},p1,{x:p0.x-nx*hw,y:p0.y-ny*hw}];
+}
+function circlePts(c,r,n=24){const a=[];for(let i=0;i<n;i++){const t=-i/n*2*Math.PI;a.push({x:c.x+r*Math.cos(t),y:c.y+r*Math.sin(t)})}return a}
+const lp=(a,b,u)=>({x:a.x+(b.x-a.x)*u,y:a.y+(b.y-a.y)*u});
+const mapper=(ox,gy,s)=>{const M=p=>[ox+s*p.x,gy-s*p.y];
+  const S=pts=>pts.map(p=>{const m=M(p);return m[0].toFixed(1)+','+m[1].toFixed(1)}).join(' ');
+  // one path from several polygons, all forced clockwise so overlaps merge into one shape
+  const D=polys=>polys.map(pts=>{let a=0;for(let i=0;i<pts.length;i++){const p=pts[i],q=pts[(i+1)%pts.length];a+=p.x*q.y-q.x*p.y}
+    const o=a>0?pts.slice().reverse():pts;return 'M'+S(o).replace(/ /g,' L')+'Z'}).join('');
+  return{M,S,D,s}};
+function makeJoint(par){const r=el('circle',{fill:C.paper,stroke:C.ink},par),d=el('circle',{fill:C.ink},par);
+  return{place(x,y,s,op=1){set(r,{cx:x,cy:y,r:6*s,'stroke-width':2.2*s,opacity:op});set(d,{cx:x,cy:y,r:2*s,opacity:op})}}}
+function makeBone(par,col){return el('polygon',{fill:col||C.boneSpine,opacity:.72},par)}
+const HAIR={fill:C.hair,stroke:C.hairLine,'stroke-linejoin':'round'};
+/* sweater torso in profile (wider at the shoulders), with cream hem stripes */
+function torsoPts(hip,ch,dir=1){
+  const dx=ch.x-hip.x,dy=ch.y-hip.y,l=Math.hypot(dx,dy)||1,ux=dx/l,uy=dy/l,nx=-uy*dir,ny=ux*dir;   // n: toward the back
+  const at=(a,b)=>({x:hip.x+ux*a+nx*b,y:hip.y+uy*a+ny*b});
+  return[at(-24,26),at(l+4,40),at(l+12,-32),at(-24,-30)];
+}
+function makeTorso(par){
+  const body=el('path',{fill:C.sweater},par),hem=el('path',{fill:C.stripe},par),hem2=el('path',{fill:C.stripe},par);
+  return{draw(hip,ch,mp){const t=torsoPts(hip,ch),[A,B,Cc,Dd]=t,band=(u0,u1)=>[lp(A,B,u0),lp(A,B,u1),lp(Dd,Cc,u1),lp(Dd,Cc,u0)];
+    set(body,{d:mp.D([t])});set(hem,{d:mp.D([band(.05,.12)])});set(hem2,{d:mp.D([band(.16,.2)])})}};
+}
+/* head in profile facing right: short white bob, peach face, cheek blush, no eyes */
+function makeProfileHead(par){
+  const back=el('polygon',HAIR,par),strands=el('path',{fill:'none',stroke:C.hairLine,'stroke-linecap':'round'},par),skin=el('path',{fill:C.skin},par),cheek=el('circle',{fill:C.cheek,opacity:.75},par);
+  const fringe=el('polygon',HAIR,par),mouth=el('path',{fill:'none',stroke:C.fk,'stroke-linecap':'round'},par);
+  return{draw(hd,neckBase,mp,s){
+    const P=(dx,dy)=>({x:hd.x+dx,y:hd.y+dy}),{M,S,D}=mp,at=(dx,dy)=>M(P(dx,dy));
+    set(back,{points:S([P(6,46),P(-30,42),P(-46,22),P(-48,-6),P(-42,-30),P(-30,-22),P(-24,-34),P(-14,-12),P(-2,8)]),'stroke-width':2.4*s});
+    const ln=(a,b)=>{const [x0,y0]=at(...a),[x1,y1]=at(...b);return`M${x0},${y0} L${x1},${y1}`};
+    set(strands,{d:ln([-22,32],[-36,-16])+ln([-8,30],[-22,-6]),'stroke-width':2.2*s});
+    set(skin,{d:D([circlePts(hd,32),[P(26,8),P(40,-6),P(26,-12)],quadPts(neckBase,hd,20,20)])});
+    const [cx,cy]=at(14,-8);set(cheek,{cx,cy,r:8*s});
+    set(fringe,{points:S([P(-42,14),P(-36,38),P(-12,48),P(18,46),P(38,30),P(44,8),P(34,14),P(28,-2),P(19,14),P(9,2),P(-1,16),P(-12,2),P(-22,16),P(-32,2)]),'stroke-width':2.4*s});
+    const [m0x,m0y]=at(27,-20),[m1x,m1y]=at(21,-23);set(mouth,{d:`M${m0x},${m0y} L${m1x},${m1y}`,'stroke-width':3*s});
+  }};
+}
+/* a two-segment limb (upper + lower + rounded joint) as one shape, plus a hand (with a cuff stripe) or a shoe */
+const ARM_W=[26,22,18],LEG_W=[38,28,20];
+function makeLimb(par,col,endKind,endCol){
+  const shape=el('path',{fill:col},par),cuff=endKind==='shoe'?null:el('path',{fill:C.stripe},par);
+  const end=endKind==='shoe'?el('polygon',{fill:endCol||C.shoe},par):el('circle',{fill:endCol||C.skin},par);
+  return{shape,end,draw(pts,mp,s,w){
+    set(shape,{d:mp.D([quadPts(pts[0],pts[1],w[0],w[1]),quadPts(pts[1],pts[2],w[1],w[2]),circlePts(pts[1],w[1]/2)])});
+    if(endKind==='shoe'){const a=pts[2],t=pts[3];set(end,{points:mp.S([{x:a.x-9,y:a.y+10},{x:a.x-14,y:a.y-FIG.ank},{x:t.x+12,y:t.y},{x:t.x+4,y:t.y+8}])})}
+    else{set(cuff,{d:mp.D([quadPts(lp(pts[1],pts[2],.74),lp(pts[1],pts[2],.86),w[2]+1,w[2]+1)])});
+      const [hx,hy]=mp.M(pts[2]);set(end,{cx:hx,cy:hy,r:s*11})}
+  }};
+}
+/* ---------- walking pose (side view, facing right, origin = ground under the hips) ---------- */
+const FIG={L1:100,L2:100,H:192,Hs:208,ank:10,toe:28,spine:112,neck:16,headR:32,U:72,F:68,S:130,lift:26,bob:7,swing:24};
+const hipHeight=(p,k)=>lerp(FIG.Hs,FIG.H,k)-FIG.bob*k*Math.cos(4*Math.PI*p);
+function walkPose(p,k,sink=0,fix=0){  // sink: the body drops this much while the near foot is planted, pushing that foot into the floor; fix: 0..1 lifts the foot back up
+  const o=FIG,P=Math.PI,qn=((p%1)+1)%1,dip=sink*(qn<.5?Math.sin(P*qn/.5):0);
+  const hip={x:0,y:hipHeight(p,k)-dip};
+  const foot=q=>{q=((q%1)+1)%1;let x,y=0;if(q<.5)x=o.S*k*(.5-2*q);else{const u=(q-.5)*2;x=o.S*k*(smooth(u)-.5);y=o.lift*k*Math.sin(P*u)}return{x,y:y+o.ank}};
+  const leg=(q,d)=>{const a=foot(q);a.y-=d;
+    const n=ik2(hip.x,hip.y,a.x,a.y,o.L1,o.L2,1);return[hip,{x:n.ex,y:n.ey},{x:n.hx,y:n.hy},{x:n.hx+o.toe,y:n.hy-o.ank-d*.3}]};
+  const ch={x:hip.x+6,y:hip.y+o.spine},nk={x:ch.x+3,y:ch.y+o.neck},hd={x:nk.x+5,y:nk.y+o.headR};
+  const arm=f=>{const a1=(-90+o.swing*k*f)*D2R,a2=a1+(18+12*k*Math.max(0,f))*D2R,e={x:ch.x+o.U*Math.cos(a1),y:ch.y+o.U*Math.sin(a1)};
+    return[ch,e,{x:e.x+o.F*Math.cos(a2),y:e.y+o.F*Math.sin(a2)}]};
+  const c=Math.cos(2*P*p);
+  return{hip,ch,nk,hd,nearLeg:leg(p,dip*(1-fix)),farLeg:leg(p+.5,0),nearArm:arm(-c),farArm:arm(c)};
+}
+/* ---------- side-view character + multicolour bone overlay ---------- */
+function makeChar(parent){
+  const g=el('g',{},parent),body=el('g',{},g),bones=el('g',{},g);
+  const far={arm:makeLimb(body,C.sleeve2,'hand',C.skin2),leg:makeLimb(body,C.pants2,'shoe')};
+  const near={leg:makeLimb(body,C.pants,'shoe')};
+  const torso=makeTorso(body),head=makeProfileHead(body);
+  near.arm=makeLimb(body,C.sleeve,'hand');
+  const bfar=el('g',{opacity:.55},bones),bmid=el('g',{},bones);
+  const fb={arm:[makeBone(bfar,C.boneArm),makeBone(bfar,C.boneArm)],leg:[0,1,2].map(()=>makeBone(bfar,C.boneLeg))};
+  const sb=[makeBone(bmid),makeBone(bmid)];
+  const nb={leg:[0,1,2].map(()=>makeBone(bmid,C.boneLeg)),arm:[0,1].map(()=>makeBone(bmid,C.boneArm))};
+  const jf=[0,1,2,3].map(()=>makeJoint(bfar)),jn=[0,1,2,3,4,5,6].map(()=>makeJoint(bmid));
+  return{g,body,bones,draw(pose,ox,gy,s,o={}){
+    const mp=mapper(ox,gy,s),{M,S}=mp;
+    far.arm.draw(pose.farArm,mp,s,ARM_W);far.leg.draw(pose.farLeg,mp,s,LEG_W);
+    near.leg.draw(pose.nearLeg,mp,s,LEG_W);
+    torso.draw(pose.hip,pose.ch,mp);head.draw(pose.hd,pose.ch,mp,s);
+    near.arm.draw(pose.nearArm,mp,s,ARM_W);
+    const setB=(b,p0,p1,col)=>{set(b,{points:S(bonePts(p0,p1,4.5))});if(col)set(b,{fill:col})};
+    const bc=o.boneCol||{};
+    setB(fb.arm[0],pose.farArm[0],pose.farArm[1]);setB(fb.arm[1],pose.farArm[1],pose.farArm[2]);
+    for(let i=0;i<3;i++)setB(fb.leg[i],pose.farLeg[i],pose.farLeg[i+1]);
+    setB(sb[0],pose.hip,pose.ch);setB(sb[1],pose.ch,pose.hd);
+    for(let i=0;i<3;i++)setB(nb.leg[i],pose.nearLeg[i],pose.nearLeg[i+1],bc.nearLeg||C.boneLeg);
+    for(let i=0;i<2;i++)setB(nb.arm[i],pose.nearArm[i],pose.nearArm[i+1],bc.nearArm||C.boneArm);
+    [pose.farLeg[1],pose.farLeg[2],pose.farArm[1],pose.farArm[2]].forEach((p,i)=>{const [x,y]=M(p);jf[i].place(x,y,s)});
+    [pose.hip,pose.ch,pose.hd,pose.nearLeg[1],pose.nearLeg[2],pose.nearArm[1],pose.nearArm[2]].forEach((p,i)=>{const [x,y]=M(p);jn[i].place(x,y,s)});
+    set(bones,{opacity:o.bones===undefined?1:o.bones});
+  }};
+}
+/* ---------- front-view character (T-pose / bust), origin = ground between the feet ---------- */
+function makeFrontHead(par,backPar){
+  const back=el('polygon',HAIR,backPar||par),skin=el('path',{fill:C.skin},par);
+  const cheeks=[0,1].map(()=>el('circle',{fill:C.cheek,opacity:.75},par));
+  const fringe=el('polygon',HAIR,par),mouth=el('path',{fill:'none',stroke:C.fk,'stroke-linecap':'round'},par);
+  return{draw(hd,neckBase,mp,s){
+    const P=(dx,dy)=>({x:hd.x+dx,y:hd.y+dy}),{M,S,D}=mp,at=(dx,dy)=>M(P(dx,dy));
+    set(back,{points:S([P(-44,18),P(-50,-6),P(-48,-30),P(-34,-24),P(34,-24),P(48,-30),P(50,-6),P(44,18),P(30,44),P(0,52),P(-30,44)]),'stroke-width':2.4*s});
+    set(skin,{d:D([circlePts(hd,32),quadPts(neckBase,hd,22,22)])});
+    [-1,1].forEach((sg,i)=>{const [cx,cy]=at(sg*17,-8);set(cheeks[i],{cx,cy,r:7.5*s})});
+    set(fringe,{points:S([P(-42,10),P(-36,36),P(-12,48),P(14,48),P(36,36),P(42,10),P(32,18),P(24,4),P(13,18),P(3,6),P(-7,18),P(-17,4),P(-28,18)]),'stroke-width':2.4*s});
+    const [m0x,m0y]=at(-5,-21),[m1x,m1y]=at(0,-24),[m2x,m2y]=at(5,-21);set(mouth,{d:`M${m0x},${m0y} Q${m1x},${m1y} ${m2x},${m2y}`,'stroke-width':3*s});
+  }};
+}
+/* opt.sides: which arms to draw (-1 = viewer's left, 1 = right); opt.legs:false for a bust */
+function makeFront(parent,opt={}){
+  const sides=opt.sides||[-1,1],legSides=opt.legs===false?[]:[-1,1];
+  const g=el('g',{},parent),hairBack=el('g',{},g),body=el('g',{},g),bones=el('g',{},g);
+  const legs=legSides.map(()=>({p:el('path',{fill:C.pants},body),shoe:el('polygon',{fill:C.shoe},body)}));
+  const torso=el('polygon',{fill:C.sweater},body),hem=el('polygon',{fill:C.stripe},body);
+  const vneck=el('polygon',{fill:C.skin},body),vline=el('polyline',{fill:'none',stroke:C.stripe,'stroke-linejoin':'round'},body);
+  const arms=sides.map(()=>makeLimb(body,C.sleeve,'hand'));
+  const head=makeFrontHead(body,hairBack);
+  const bSpine=[makeBone(bones),makeBone(bones)],bArm=sides.map(()=>[makeBone(bones,C.boneArm),makeBone(bones,C.boneArm)]);
+  const bLeg=legSides.map(()=>[makeBone(bones,C.boneLeg),makeBone(bones,C.boneLeg)]);
+  const joints=[...Array(15)].map(()=>makeJoint(bones));
+  const pts={};
+  return{g,body,bones,pts,draw(ox,gy,s,o={}){
+    const mp=mapper(ox,gy,s),{M,S,D}=mp,arm=(o.arm===undefined?0:o.arm)*D2R;
+    const hipY=FIG.Hs,shY=hipY+FIG.spine,hd={x:0,y:shY+FIG.neck+FIG.headR},neck={x:0,y:shY},J=[];
+    legSides.forEach((sg,i)=>{const L=legs[i],h={x:sg*20,y:hipY},k={x:sg*21,y:105},a={x:sg*22,y:FIG.ank};
+      set(L.p,{d:D([quadPts(h,k,38,30),quadPts(k,a,30,22),circlePts(k,15)])});
+      set(L.shoe,{points:S([{x:a.x-14,y:0},{x:a.x+14,y:0},{x:a.x+10,y:15},{x:a.x-10,y:15}])});
+      set(bLeg[i][0],{points:S(bonePts(h,k,4.5))});set(bLeg[i][1],{points:S(bonePts(k,a,4.5))});
+      const n=sg<0?'L':'R';pts['hip'+n]=M(h);pts['knee'+n]=M(k);pts['ank'+n]=M(a);J.push(h,k,a)});
+    set(torso,{points:S([{x:-46,y:hipY-14},{x:46,y:hipY-14},{x:56,y:shY+6},{x:-56,y:shY+6}])});
+    set(hem,{points:S([{x:-46,y:hipY-14},{x:46,y:hipY-14},{x:47,y:hipY-2},{x:-47,y:hipY-2}])});
+    set(vneck,{points:S([{x:-16,y:shY+6},{x:16,y:shY+6},{x:0,y:shY-22}])});
+    set(vline,{points:S([{x:-24,y:shY+6},{x:0,y:shY-30},{x:24,y:shY+6}]),'stroke-width':6*s});
+    sides.forEach((sg,i)=>{const sh={x:sg*50,y:shY-4},d={x:sg*Math.cos(arm),y:Math.sin(arm)},
+      e={x:sh.x+FIG.U*d.x,y:sh.y+FIG.U*d.y},h={x:e.x+FIG.F*d.x,y:e.y+FIG.F*d.y};
+      arms[i].draw([sh,e,h],mp,s,ARM_W);
+      set(bArm[i][0],{points:S(bonePts(sh,e,4.5))});set(bArm[i][1],{points:S(bonePts(e,h,4.5))});
+      const n=sg<0?'L':'R';pts['hand'+n]=M(h);pts['elbow'+n]=M(e);pts['sh'+n]=M(sh);J.push(sh,e,h)});
+    head.draw(hd,neck,mp,s);
+    set(bSpine[0],{points:S(bonePts({x:0,y:hipY},neck,4.5))});set(bSpine[1],{points:S(bonePts(neck,hd,4.5))});
+    J.push({x:0,y:hipY},neck);
+    joints.forEach((j,i)=>{if(J[i]){const [x,y]=M(J[i]);j.place(x,y,s)}else j.place(-99,-99,0,0)});
+    set(bones,{opacity:o.bones===undefined?1:o.bones});
+  }};
+}
+/* ---------- page: pipeline.html ---------- */
+const S=0.8,GY=700,T=1.6,V=FIG.S*S/(T/2);
+const BOX=[{x:80,label:'Mixamo'},{x:710,label:'Maya + Plugin'},{x:1340,label:'Unreal Engine'}],BW=500,BY=220,BH=540;
+const ACTIVE=[[0,3.6],[3.9,6.8],[7.1,10]];
+backdrop();
+const hl=BOX.map((b,i)=>{
+  el('rect',{x:b.x,y:BY,width:BW,height:BH,rx:22,fill:C.paper,stroke:C.line,'stroke-width':4});
+  el('rect',{x:b.x+2,y:GY,width:BW-4,height:BY+BH-GY-2,fill:C.floor,opacity:.8});
+  el('line',{x1:b.x+2,y1:GY,x2:b.x+BW-2,y2:GY,stroke:C.ink,'stroke-width':4});
+  const h=el('rect',{x:b.x,y:BY,width:BW,height:BH,rx:22,fill:'none',stroke:C.ink,'stroke-width':5});
+  const tx=el('text',{x:b.x+BW/2,y:BY+70,'text-anchor':'middle','font-size':38,'font-weight':700,fill:C.ink});tx.textContent=b.label;
+  if(i<2){const x1=b.x+BW+22,x2=BOX[i+1].x-22,y=BY+BH/2;
+    el('line',{x1,y1:y,x2:x2-14,y2:y,stroke:C.ink,'stroke-width':6,'stroke-linecap':'round'});
+    el('path',{d:`M${x2},${y} l-26,-16 v32 z`,fill:C.ink});}
+  return{h,tx};
+});
+const capsule=el('rect',{width:140,height:362,rx:70,fill:C.root,'fill-opacity':.05,stroke:C.root,'stroke-width':5,'stroke-dasharray':'14 10','stroke-opacity':.85});
+const fig=makeChar(svg);
+const ring=el('circle',{r:30,fill:'none',stroke:C.mod,'stroke-width':5});
+const rootD=el('polygon',{fill:C.root,stroke:C.ink,'stroke-width':3});
+
+const caps=captions([
+  [0,3.5,'Download an animation from Mixamo'],
+  [3.9,6.7,'The plugin prepares it in Maya'],
+  [7.1,10,'Ready to use in the game'],
+]);
+function figX(t){
+  if(t<3.4)return 330;
+  if(t<4.3)return lerp(330,960,ease(seg(t,3.4,4.3)));
+  if(t<6.6)return 960;
+  if(t<7.4)return lerp(960,1410,ease(seg(t,6.6,7.4)));
+  return 1410+V*(t-7.4);
+}
+run(10,t=>{
+  showCaps(caps,t);
+  ACTIVE.forEach(([a,b],i)=>{const o=win(t,a,b,.3);set(hl[i].h,{opacity:o})});
+  const x=figX(t),pose=walkPose(t/T,1),a=win(t,0,10,.3);
+  // hand tweak (Maya step): move the near hand a little, solve the arm with IK
+  const u=t<6?ease(seg(t,5.2,6.0)):1,mod=t>=5.2;
+  if(mod){const sh=pose.nearArm[0],hd=pose.nearArm[2],tx=hd.x+30*u,ty=hd.y+14*u,
+    r=ik2(sh.x,sh.y,tx,ty,FIG.U,FIG.F,-1);pose.nearArm=[sh,{x:r.ex,y:r.ey},{x:r.hx,y:r.hy}]}
+  fig.draw(pose,x,GY,S,{boneCol:mod?{nearArm:C.mod}:{}});fig.g.setAttribute('opacity',a);
+  const h={x:x+S*pose.nearArm[2].x,y:GY-S*pose.nearArm[2].y};
+  set(ring,{cx:h.x,cy:h.y,opacity:win(t,5.0,6.6,.3)});
+  const rs=t<4.6?0:backOut(seg(t,4.6,5.0));
+  set(rootD,{points:diamond(x,GY,22*rs),opacity:a});
+  set(capsule,{x:x-70,y:GY-368,opacity:seg(t,7.4,7.8)*a});
+});
+</script>
+</body>
+</html>

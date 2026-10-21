@@ -1,0 +1,402 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>IK on Existing Animation</title>
+<style>
+  :root{--bg:#F7E7C8}
+  html,body{margin:0;height:100%;overflow:hidden;background:var(--bg)}
+  body{font-family:"Segoe UI","Helvetica Neue",Helvetica,Arial,sans-serif;color:var(--ink)}
+  body.idle{cursor:none}
+  #stage{position:absolute;left:50%;top:50%;width:1920px;height:1080px;transform-origin:50% 50%;overflow:hidden;background:var(--bg)}
+  #stage svg{position:absolute;left:0;top:0;width:1920px;height:1080px;overflow:hidden}
+  svg text{font-family:inherit}
+  #grain{position:absolute;inset:0;pointer-events:none;mix-blend-mode:multiply;opacity:.55;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='320' height='320'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .42 0 0 0 0 .35 0 0 0 0 .22 1.1 0 0 0 -.42'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+  .title{position:absolute;left:0;right:0;top:50px;text-align:center;font-size:52px;font-weight:700;letter-spacing:.01em}
+  .cap{position:absolute;left:0;right:0;top:922px;text-align:center;font-size:42px;font-weight:500;opacity:0}
+  #back{position:fixed;top:14px;left:18px;font-size:15px;color:var(--sub);text-decoration:none;opacity:0;transition:opacity .3s}
+  body.ui #back{opacity:1}
+
+</style>
+</head>
+<body>
+<a id="back" href="index.html">&larr; index</a>
+<div id="stage">
+  <svg id="svg" viewBox="0 0 1920 1080"></svg>
+  <div class="title">IK on Existing Animation</div>
+  <div id="grain"></div>
+</div>
+<script>
+/* ---------- shared core (same in every page) ---------- */
+const C={bg:'#F7E7C8',wall:'#F2DDBA',floor:'#EED6AE',ink:'#3A2C28',sub:'#8A7864',line:'#D9C3A0',paper:'#FDF7EA',
+         skin:'#F5CDB0',skin2:'#E3B597',cheek:'#EE9A98',eye:'#A3CC9C',hair:'#FDF9F1',hairLine:'#D2C0AC',
+         sweater:'#AEBC9E',sleeve:'#9CAD8C',sleeve2:'#86967A',stripe:'#F6F1E2',pants:'#8E6B5C',pants2:'#6F5247',shoe:'#4A3833',gray:'#A39E94',
+         boneSpine:'#9D84DA',boneArm:'#C66A57',boneLeg:'#7E9BE2',
+         root:'#D8392B',ik:'#3554C2',fk:'#C23A78',mod:'#1F8F7C',hips:'#E58A2E',star:'#E8B92E'};
+for(const k in C)document.documentElement.style.setProperty('--'+k,C[k]);
+const W=1920,H=1080,NS='http://www.w3.org/2000/svg',stage=document.getElementById('stage'),svg=document.getElementById('svg');
+function el(tag,a,parent){const e=document.createElementNS(NS,tag);set(e,a||{});(parent||svg).appendChild(e);return e}
+function set(e,a){for(const k in a)e.setAttribute(k,a[k]);return e}
+const clamp=(x,a=0,b=1)=>Math.min(b,Math.max(a,x)),lerp=(a,b,u)=>a+(b-a)*u,seg=(t,a,b)=>clamp((t-a)/(b-a));
+const smooth=u=>u*u*(3-2*u),ease=u=>u<.5?4*u*u*u:1-Math.pow(-2*u+2,3)/2;
+const backOut=u=>{const s=1.7;u-=1;return u*u*((s+1)*u+s)+1};
+const win=(t,a,b,f=.35)=>Math.min(seg(t,a,a+f),1-seg(t,b-f,b));
+const D2R=Math.PI/180;
+function fit(){const s=Math.min(innerWidth/W,innerHeight/H);stage.style.transform=`translate(-50%,-50%) scale(${s})`}
+addEventListener('resize',fit);fit();
+function captions(list,cls){return list.map(([a,b,txt])=>{const d=document.createElement('div');d.className='cap'+(cls?' '+cls:'');d.textContent=txt;stage.appendChild(d);return{d,a,b}})}
+function showCaps(caps,t){for(const c of caps)c.d.style.opacity=win(t,c.a,c.b,.4).toFixed(3)}
+function run(DUR,render){
+  const q=new URLSearchParams(location.search);let fixed=q.has('t')?parseFloat(q.get('t')):null;
+  let t0=performance.now(),paused=false,pt=0;
+  window.__anim={dur:DUR,seek(t){fixed=t;render(t)}};   // used by the video exporter to step frame by frame
+  addEventListener('keydown',e=>{
+    if(e.code==='Space'){paused=!paused;if(paused)pt=(performance.now()-t0)/1000;else t0=performance.now()-pt*1000;e.preventDefault()}
+    if(e.key==='r'||e.key==='R'){t0=performance.now();pt=0}
+  });
+  (function loop(now){render(fixed!==null?fixed:((paused?pt:(now-t0)/1000)%DUR));requestAnimationFrame(loop)})(performance.now());
+}
+let idleTimer;addEventListener('mousemove',()=>{document.body.classList.add('ui');document.body.classList.remove('idle');
+  clearTimeout(idleTimer);idleTimer=setTimeout(()=>{document.body.classList.remove('ui');document.body.classList.add('idle')},1800)});
+/* two-bone IK in y-up coords; side=+1 puts the middle joint on the left of the root->target line, -1 on the right */
+function ik2(sx,sy,tx,ty,L1,L2,side){
+  let dx=tx-sx,dy=ty-sy,d=Math.hypot(dx,dy);const dm=(L1+L2)*.999;
+  if(d>dm){dx*=dm/d;dy*=dm/d;d=dm}d=Math.max(d,Math.abs(L1-L2)+1e-3);
+  const th=Math.atan2(dy,dx)+side*Math.acos(clamp((L1*L1+d*d-L2*L2)/(2*L1*d),-1,1));
+  return{ex:sx+L1*Math.cos(th),ey:sy+L1*Math.sin(th),hx:sx+dx,hy:sy+dy};
+}
+function diamond(x,y,r){return `${x},${y-r} ${x+r},${y} ${x},${y+r} ${x-r},${y}`}
+/* paper backdrop: soft wall panels and an optional floor plane */
+function backdrop(floorY){
+  const g=el('g',{});
+  [[150,90],[420,40],[1240,120],[1560,60],[1700,30]].forEach(([x,w],i)=>el('rect',{x,y:0,width:w,height:1080,fill:i%2?C.paper:C.wall,opacity:.4},g));
+  el('path',{d:'M36,880 V1044 H210 M1884,200 V36 H1710',fill:'none',stroke:C.fk,'stroke-width':3,opacity:.45},g);
+  if(floorY!==undefined){el('rect',{x:0,y:floorY,width:1920,height:1080-floorY,fill:C.floor},g);
+    el('polygon',{points:`0,${floorY} 760,${floorY} 1300,1080 0,1080`,fill:C.wall,opacity:.35},g)}
+  return g;
+}
+/* ---------- geometric character pieces (y-up coords, mapped to screen by a mapper) ---------- */
+function quadPts(p0,p1,w0,w1){
+  const dx=p1.x-p0.x,dy=p1.y-p0.y,l=Math.hypot(dx,dy)||1,nx=-dy/l,ny=dx/l;
+  return[{x:p0.x+nx*w0/2,y:p0.y+ny*w0/2},{x:p1.x+nx*w1/2,y:p1.y+ny*w1/2},{x:p1.x-nx*w1/2,y:p1.y-ny*w1/2},{x:p0.x-nx*w0/2,y:p0.y-ny*w0/2}];
+}
+function bonePts(p0,p1,hw){
+  const dx=p1.x-p0.x,dy=p1.y-p0.y,l=Math.hypot(dx,dy)||1,nx=-dy/l,ny=dx/l;
+  return[{x:p0.x+nx*hw,y:p0.y+ny*hw},p1,{x:p0.x-nx*hw,y:p0.y-ny*hw}];
+}
+function circlePts(c,r,n=24){const a=[];for(let i=0;i<n;i++){const t=-i/n*2*Math.PI;a.push({x:c.x+r*Math.cos(t),y:c.y+r*Math.sin(t)})}return a}
+const lp=(a,b,u)=>({x:a.x+(b.x-a.x)*u,y:a.y+(b.y-a.y)*u});
+const mapper=(ox,gy,s)=>{const M=p=>[ox+s*p.x,gy-s*p.y];
+  const S=pts=>pts.map(p=>{const m=M(p);return m[0].toFixed(1)+','+m[1].toFixed(1)}).join(' ');
+  // one path from several polygons, all forced clockwise so overlaps merge into one shape
+  const D=polys=>polys.map(pts=>{let a=0;for(let i=0;i<pts.length;i++){const p=pts[i],q=pts[(i+1)%pts.length];a+=p.x*q.y-q.x*p.y}
+    const o=a>0?pts.slice().reverse():pts;return 'M'+S(o).replace(/ /g,' L')+'Z'}).join('');
+  return{M,S,D,s}};
+function makeJoint(par){const r=el('circle',{fill:C.paper,stroke:C.ink},par),d=el('circle',{fill:C.ink},par);
+  return{place(x,y,s,op=1){set(r,{cx:x,cy:y,r:6*s,'stroke-width':2.2*s,opacity:op});set(d,{cx:x,cy:y,r:2*s,opacity:op})}}}
+function makeBone(par,col){return el('polygon',{fill:col||C.boneSpine,opacity:.72},par)}
+const HAIR={fill:C.hair,stroke:C.hairLine,'stroke-linejoin':'round'};
+/* sweater torso in profile (wider at the shoulders), with cream hem stripes */
+function torsoPts(hip,ch,dir=1){
+  const dx=ch.x-hip.x,dy=ch.y-hip.y,l=Math.hypot(dx,dy)||1,ux=dx/l,uy=dy/l,nx=-uy*dir,ny=ux*dir;   // n: toward the back
+  const at=(a,b)=>({x:hip.x+ux*a+nx*b,y:hip.y+uy*a+ny*b});
+  return[at(-24,26),at(l+4,40),at(l+12,-32),at(-24,-30)];
+}
+function makeTorso(par){
+  const body=el('path',{fill:C.sweater},par),hem=el('path',{fill:C.stripe},par),hem2=el('path',{fill:C.stripe},par);
+  return{draw(hip,ch,mp){const t=torsoPts(hip,ch),[A,B,Cc,Dd]=t,band=(u0,u1)=>[lp(A,B,u0),lp(A,B,u1),lp(Dd,Cc,u1),lp(Dd,Cc,u0)];
+    set(body,{d:mp.D([t])});set(hem,{d:mp.D([band(.05,.12)])});set(hem2,{d:mp.D([band(.16,.2)])})}};
+}
+/* head in profile facing right: short white bob, peach face, cheek blush, no eyes */
+function makeProfileHead(par){
+  const back=el('polygon',HAIR,par),strands=el('path',{fill:'none',stroke:C.hairLine,'stroke-linecap':'round'},par),skin=el('path',{fill:C.skin},par),cheek=el('circle',{fill:C.cheek,opacity:.75},par);
+  const fringe=el('polygon',HAIR,par),mouth=el('path',{fill:'none',stroke:C.fk,'stroke-linecap':'round'},par);
+  return{draw(hd,neckBase,mp,s){
+    const P=(dx,dy)=>({x:hd.x+dx,y:hd.y+dy}),{M,S,D}=mp,at=(dx,dy)=>M(P(dx,dy));
+    set(back,{points:S([P(6,46),P(-30,42),P(-46,22),P(-48,-6),P(-42,-30),P(-30,-22),P(-24,-34),P(-14,-12),P(-2,8)]),'stroke-width':2.4*s});
+    const ln=(a,b)=>{const [x0,y0]=at(...a),[x1,y1]=at(...b);return`M${x0},${y0} L${x1},${y1}`};
+    set(strands,{d:ln([-22,32],[-36,-16])+ln([-8,30],[-22,-6]),'stroke-width':2.2*s});
+    set(skin,{d:D([circlePts(hd,32),[P(26,8),P(40,-6),P(26,-12)],quadPts(neckBase,hd,20,20)])});
+    const [cx,cy]=at(14,-8);set(cheek,{cx,cy,r:8*s});
+    set(fringe,{points:S([P(-42,14),P(-36,38),P(-12,48),P(18,46),P(38,30),P(44,8),P(34,14),P(28,-2),P(19,14),P(9,2),P(-1,16),P(-12,2),P(-22,16),P(-32,2)]),'stroke-width':2.4*s});
+    const [m0x,m0y]=at(27,-20),[m1x,m1y]=at(21,-23);set(mouth,{d:`M${m0x},${m0y} L${m1x},${m1y}`,'stroke-width':3*s});
+  }};
+}
+/* a two-segment limb (upper + lower + rounded joint) as one shape, plus a hand (with a cuff stripe) or a shoe */
+const ARM_W=[26,22,18],LEG_W=[38,28,20];
+function makeLimb(par,col,endKind,endCol){
+  const shape=el('path',{fill:col},par),cuff=endKind==='shoe'?null:el('path',{fill:C.stripe},par);
+  const end=endKind==='shoe'?el('polygon',{fill:endCol||C.shoe},par):el('circle',{fill:endCol||C.skin},par);
+  return{shape,end,draw(pts,mp,s,w){
+    set(shape,{d:mp.D([quadPts(pts[0],pts[1],w[0],w[1]),quadPts(pts[1],pts[2],w[1],w[2]),circlePts(pts[1],w[1]/2)])});
+    if(endKind==='shoe'){const a=pts[2],t=pts[3];set(end,{points:mp.S([{x:a.x-9,y:a.y+10},{x:a.x-14,y:a.y-FIG.ank},{x:t.x+12,y:t.y},{x:t.x+4,y:t.y+8}])})}
+    else{set(cuff,{d:mp.D([quadPts(lp(pts[1],pts[2],.74),lp(pts[1],pts[2],.86),w[2]+1,w[2]+1)])});
+      const [hx,hy]=mp.M(pts[2]);set(end,{cx:hx,cy:hy,r:s*11})}
+  }};
+}
+/* ---------- walking pose (side view, facing right, origin = ground under the hips) ---------- */
+const FIG={L1:100,L2:100,H:192,Hs:208,ank:10,toe:28,spine:112,neck:16,headR:32,U:72,F:68,S:130,lift:26,bob:7,swing:24};
+const hipHeight=(p,k)=>lerp(FIG.Hs,FIG.H,k)-FIG.bob*k*Math.cos(4*Math.PI*p);
+function walkPose(p,k,sink=0,fix=0){  // sink: the body drops this much while the near foot is planted, pushing that foot into the floor; fix: 0..1 lifts the foot back up
+  const o=FIG,P=Math.PI,qn=((p%1)+1)%1,dip=sink*(qn<.5?Math.sin(P*qn/.5):0);
+  const hip={x:0,y:hipHeight(p,k)-dip};
+  const foot=q=>{q=((q%1)+1)%1;let x,y=0;if(q<.5)x=o.S*k*(.5-2*q);else{const u=(q-.5)*2;x=o.S*k*(smooth(u)-.5);y=o.lift*k*Math.sin(P*u)}return{x,y:y+o.ank}};
+  const leg=(q,d)=>{const a=foot(q);a.y-=d;
+    const n=ik2(hip.x,hip.y,a.x,a.y,o.L1,o.L2,1);return[hip,{x:n.ex,y:n.ey},{x:n.hx,y:n.hy},{x:n.hx+o.toe,y:n.hy-o.ank-d*.3}]};
+  const ch={x:hip.x+6,y:hip.y+o.spine},nk={x:ch.x+3,y:ch.y+o.neck},hd={x:nk.x+5,y:nk.y+o.headR};
+  const arm=f=>{const a1=(-90+o.swing*k*f)*D2R,a2=a1+(18+12*k*Math.max(0,f))*D2R,e={x:ch.x+o.U*Math.cos(a1),y:ch.y+o.U*Math.sin(a1)};
+    return[ch,e,{x:e.x+o.F*Math.cos(a2),y:e.y+o.F*Math.sin(a2)}]};
+  const c=Math.cos(2*P*p);
+  return{hip,ch,nk,hd,nearLeg:leg(p,dip*(1-fix)),farLeg:leg(p+.5,0),nearArm:arm(-c),farArm:arm(c)};
+}
+/* ---------- side-view character + multicolour bone overlay ---------- */
+function makeChar(parent){
+  const g=el('g',{},parent),body=el('g',{},g),bones=el('g',{},g);
+  const far={arm:makeLimb(body,C.sleeve2,'hand',C.skin2),leg:makeLimb(body,C.pants2,'shoe')};
+  const near={leg:makeLimb(body,C.pants,'shoe')};
+  const torso=makeTorso(body),head=makeProfileHead(body);
+  near.arm=makeLimb(body,C.sleeve,'hand');
+  const bfar=el('g',{opacity:.55},bones),bmid=el('g',{},bones);
+  const fb={arm:[makeBone(bfar,C.boneArm),makeBone(bfar,C.boneArm)],leg:[0,1,2].map(()=>makeBone(bfar,C.boneLeg))};
+  const sb=[makeBone(bmid),makeBone(bmid)];
+  const nb={leg:[0,1,2].map(()=>makeBone(bmid,C.boneLeg)),arm:[0,1].map(()=>makeBone(bmid,C.boneArm))};
+  const jf=[0,1,2,3].map(()=>makeJoint(bfar)),jn=[0,1,2,3,4,5,6].map(()=>makeJoint(bmid));
+  return{g,body,bones,draw(pose,ox,gy,s,o={}){
+    const mp=mapper(ox,gy,s),{M,S}=mp;
+    far.arm.draw(pose.farArm,mp,s,ARM_W);far.leg.draw(pose.farLeg,mp,s,LEG_W);
+    near.leg.draw(pose.nearLeg,mp,s,LEG_W);
+    torso.draw(pose.hip,pose.ch,mp);head.draw(pose.hd,pose.ch,mp,s);
+    near.arm.draw(pose.nearArm,mp,s,ARM_W);
+    const setB=(b,p0,p1,col)=>{set(b,{points:S(bonePts(p0,p1,4.5))});if(col)set(b,{fill:col})};
+    const bc=o.boneCol||{};
+    setB(fb.arm[0],pose.farArm[0],pose.farArm[1]);setB(fb.arm[1],pose.farArm[1],pose.farArm[2]);
+    for(let i=0;i<3;i++)setB(fb.leg[i],pose.farLeg[i],pose.farLeg[i+1]);
+    setB(sb[0],pose.hip,pose.ch);setB(sb[1],pose.ch,pose.hd);
+    for(let i=0;i<3;i++)setB(nb.leg[i],pose.nearLeg[i],pose.nearLeg[i+1],bc.nearLeg||C.boneLeg);
+    for(let i=0;i<2;i++)setB(nb.arm[i],pose.nearArm[i],pose.nearArm[i+1],bc.nearArm||C.boneArm);
+    [pose.farLeg[1],pose.farLeg[2],pose.farArm[1],pose.farArm[2]].forEach((p,i)=>{const [x,y]=M(p);jf[i].place(x,y,s)});
+    [pose.hip,pose.ch,pose.hd,pose.nearLeg[1],pose.nearLeg[2],pose.nearArm[1],pose.nearArm[2]].forEach((p,i)=>{const [x,y]=M(p);jn[i].place(x,y,s)});
+    set(bones,{opacity:o.bones===undefined?1:o.bones});
+  }};
+}
+/* ---------- front-view character (T-pose / bust), origin = ground between the feet ---------- */
+function makeFrontHead(par,backPar){
+  const back=el('polygon',HAIR,backPar||par),skin=el('path',{fill:C.skin},par);
+  const cheeks=[0,1].map(()=>el('circle',{fill:C.cheek,opacity:.75},par));
+  const fringe=el('polygon',HAIR,par),mouth=el('path',{fill:'none',stroke:C.fk,'stroke-linecap':'round'},par);
+  return{draw(hd,neckBase,mp,s){
+    const P=(dx,dy)=>({x:hd.x+dx,y:hd.y+dy}),{M,S,D}=mp,at=(dx,dy)=>M(P(dx,dy));
+    set(back,{points:S([P(-44,18),P(-50,-6),P(-48,-30),P(-34,-24),P(34,-24),P(48,-30),P(50,-6),P(44,18),P(30,44),P(0,52),P(-30,44)]),'stroke-width':2.4*s});
+    set(skin,{d:D([circlePts(hd,32),quadPts(neckBase,hd,22,22)])});
+    [-1,1].forEach((sg,i)=>{const [cx,cy]=at(sg*17,-8);set(cheeks[i],{cx,cy,r:7.5*s})});
+    set(fringe,{points:S([P(-42,10),P(-36,36),P(-12,48),P(14,48),P(36,36),P(42,10),P(32,18),P(24,4),P(13,18),P(3,6),P(-7,18),P(-17,4),P(-28,18)]),'stroke-width':2.4*s});
+    const [m0x,m0y]=at(-5,-21),[m1x,m1y]=at(0,-24),[m2x,m2y]=at(5,-21);set(mouth,{d:`M${m0x},${m0y} Q${m1x},${m1y} ${m2x},${m2y}`,'stroke-width':3*s});
+  }};
+}
+/* opt.sides: which arms to draw (-1 = viewer's left, 1 = right); opt.legs:false for a bust */
+function makeFront(parent,opt={}){
+  const sides=opt.sides||[-1,1],legSides=opt.legs===false?[]:[-1,1];
+  const g=el('g',{},parent),hairBack=el('g',{},g),body=el('g',{},g),bones=el('g',{},g);
+  const legs=legSides.map(()=>({p:el('path',{fill:C.pants},body),shoe:el('polygon',{fill:C.shoe},body)}));
+  const torso=el('polygon',{fill:C.sweater},body),hem=el('polygon',{fill:C.stripe},body);
+  const vneck=el('polygon',{fill:C.skin},body),vline=el('polyline',{fill:'none',stroke:C.stripe,'stroke-linejoin':'round'},body);
+  const arms=sides.map(()=>makeLimb(body,C.sleeve,'hand'));
+  const head=makeFrontHead(body,hairBack);
+  const bSpine=[makeBone(bones),makeBone(bones)],bArm=sides.map(()=>[makeBone(bones,C.boneArm),makeBone(bones,C.boneArm)]);
+  const bLeg=legSides.map(()=>[makeBone(bones,C.boneLeg),makeBone(bones,C.boneLeg)]);
+  const joints=[...Array(15)].map(()=>makeJoint(bones));
+  const pts={};
+  return{g,body,bones,pts,draw(ox,gy,s,o={}){
+    const mp=mapper(ox,gy,s),{M,S,D}=mp,arm=(o.arm===undefined?0:o.arm)*D2R;
+    const hipY=FIG.Hs,shY=hipY+FIG.spine,hd={x:0,y:shY+FIG.neck+FIG.headR},neck={x:0,y:shY},J=[];
+    legSides.forEach((sg,i)=>{const L=legs[i],h={x:sg*20,y:hipY},k={x:sg*21,y:105},a={x:sg*22,y:FIG.ank};
+      set(L.p,{d:D([quadPts(h,k,38,30),quadPts(k,a,30,22),circlePts(k,15)])});
+      set(L.shoe,{points:S([{x:a.x-14,y:0},{x:a.x+14,y:0},{x:a.x+10,y:15},{x:a.x-10,y:15}])});
+      set(bLeg[i][0],{points:S(bonePts(h,k,4.5))});set(bLeg[i][1],{points:S(bonePts(k,a,4.5))});
+      const n=sg<0?'L':'R';pts['hip'+n]=M(h);pts['knee'+n]=M(k);pts['ank'+n]=M(a);J.push(h,k,a)});
+    set(torso,{points:S([{x:-46,y:hipY-14},{x:46,y:hipY-14},{x:56,y:shY+6},{x:-56,y:shY+6}])});
+    set(hem,{points:S([{x:-46,y:hipY-14},{x:46,y:hipY-14},{x:47,y:hipY-2},{x:-47,y:hipY-2}])});
+    set(vneck,{points:S([{x:-16,y:shY+6},{x:16,y:shY+6},{x:0,y:shY-22}])});
+    set(vline,{points:S([{x:-24,y:shY+6},{x:0,y:shY-30},{x:24,y:shY+6}]),'stroke-width':6*s});
+    sides.forEach((sg,i)=>{const sh={x:sg*50,y:shY-4},d={x:sg*Math.cos(arm),y:Math.sin(arm)},
+      e={x:sh.x+FIG.U*d.x,y:sh.y+FIG.U*d.y},h={x:e.x+FIG.F*d.x,y:e.y+FIG.F*d.y};
+      arms[i].draw([sh,e,h],mp,s,ARM_W);
+      set(bArm[i][0],{points:S(bonePts(sh,e,4.5))});set(bArm[i][1],{points:S(bonePts(e,h,4.5))});
+      const n=sg<0?'L':'R';pts['hand'+n]=M(h);pts['elbow'+n]=M(e);pts['sh'+n]=M(sh);J.push(sh,e,h)});
+    head.draw(hd,neck,mp,s);
+    set(bSpine[0],{points:S(bonePts({x:0,y:hipY},neck,4.5))});set(bSpine[1],{points:S(bonePts(neck,hd,4.5))});
+    J.push({x:0,y:hipY},neck);
+    joints.forEach((j,i)=>{if(J[i]){const [x,y]=M(J[i]);j.place(x,y,s)}else j.place(-99,-99,0,0)});
+    set(bones,{opacity:o.bones===undefined?1:o.bones});
+  }};
+}
+/* ---------- page: ik_on_anim.html ---------- */
+const SC=1.25,GY=760,OX=700,T=1.4,SINK=30,TP=3.15;   // TP: the frame we pause on (near foot deepest in the floor)
+// scene times: usual way [U0,PL) with steps at S1/S2/S3, plugin [PL,FX), fixed playback [FX,DUR)
+const U0=5.4,S1=5.5,S2=6.7,S3=9.8,PL=11.0,FX=13.6,DUR=16;
+const BTN={x:1440,y:250,w:300,h:84};
+backdrop(GY);
+el('line',{x1:0,y1:GY,x2:1920,y2:GY,stroke:C.ink,'stroke-width':5});
+// the animated character (side) and the T-pose version (front) for the "usual way"
+const fig=makeChar(svg),front=makeFront(svg);
+// floor cover so whatever sinks below the line looks buried
+el('rect',{x:0,y:GY+2.5,width:1920,height:1080-GY,fill:C.floor,opacity:.8});
+el('line',{x1:0,y1:GY,x2:1920,y2:GY,stroke:C.ink,'stroke-width':5});
+const hit=el('ellipse',{rx:46,ry:12,fill:'none',stroke:C.root,'stroke-width':6});
+
+// ---- hand-built rig on the T-pose (usual way, step 2)
+const rig=el('g',{});
+const sel=['hipL','ankL'].map(()=>el('circle',{r:17,fill:'none',stroke:C.root,'stroke-width':5},rig));   // picked joints
+const ikh=el('line',{stroke:C.ik,'stroke-width':5,'stroke-linecap':'round'},rig);                         // ikHandle hip -> ankle
+const ikhL=el('text',{'font-size':28,'font-weight':700,fill:C.ik,'text-anchor':'end'},rig);ikhL.textContent='ikHandle1';
+const sqL=el('polygon',{fill:C.root,stroke:C.ink,'stroke-width':2.5},rig);                                 // control on the ankle
+const parentL=el('path',{fill:'none',stroke:C.ink,'stroke-width':3,'stroke-dasharray':'5 6'},rig);
+const poleLnL=el('line',{stroke:C.ik,'stroke-width':4,'stroke-dasharray':'8 8'},rig),poleL=el('polygon',{fill:C.ik,stroke:C.ink,'stroke-width':2.5},rig);
+// the rest of the limbs, done again quickly
+const REST=[{a:'hipR',b:'ankR',t:9.3},{pole:'kneeR',sg:1,t:9.42},{a:'shL',b:'handL',t:9.54},{a:'shR',b:'handR',t:9.66}].map(r=>({...r,
+  line:r.a?el('line',{stroke:C.ik,'stroke-width':5,'stroke-linecap':'round'},rig):el('line',{stroke:C.ik,'stroke-width':4,'stroke-dasharray':'8 8'},rig),
+  mk:el('polygon',{fill:r.a?C.root:C.ik,stroke:C.ink,'stroke-width':2.5},rig)}));
+const rips=[...Array(8)].map(()=>el('circle',{fill:'none',stroke:C.ink,'stroke-width':3},rig));
+// tool tag that follows the cursor (menu item / command being used)
+const tag=el('g',{}),tagR=el('rect',{x:0,y:0,height:50,rx:10,fill:C.paper,stroke:C.ink,'stroke-width':3},tag);
+const tagT=el('text',{x:16,y:35,'font-size':28,'font-weight':700,fill:C.ink},tag);
+const TAGS=[[6.75,7.6,'IK Handle Tool'],[7.7,8.0,'Parent'],[8.05,9.15,'Pole Vector']];
+
+// ---- IK control + pole on the near foot (the plugin)
+const poleLine=el('line',{stroke:C.ik,'stroke-width':4,'stroke-dasharray':'8 9','stroke-linecap':'round'});
+const poleMk=el('polygon',{fill:C.ik,stroke:C.ink,'stroke-width':2.5});
+const ctrl=el('g',{});
+const ring=el('circle',{r:36,fill:C.ik,'fill-opacity':.15,stroke:C.ik,'stroke-width':6},ctrl);
+[0,90,180,270].forEach(a=>el('path',{d:'M50,0 l-13,-11 v22 z',fill:C.ik,transform:`rotate(${a})`},ctrl));
+// "Limb IK" button
+const btn=el('g',{});
+el('text',{x:BTN.x+BTN.w/2,y:BTN.y-22,'text-anchor':'middle','font-size':30,fill:C.sub,'font-weight':600},btn).textContent='MayaMixamoAssist';
+const btnR=el('rect',{x:BTN.x,y:BTN.y,width:BTN.w,height:BTN.h,rx:18,fill:C.ik,stroke:C.ink,'stroke-width':4},btn);
+el('text',{x:BTN.x+BTN.w/2,y:BTN.y+56,'text-anchor':'middle','font-size':40,'font-weight':800,fill:C.paper},btn).textContent='Limb IK';
+// "the usual way" card: three steps, the active one highlighted, plus a key strip for step 3
+const card=el('g',{});
+el('rect',{x:1130,y:166,width:680,height:584,rx:24,fill:C.paper,stroke:C.ink,'stroke-width':5},card);
+el('text',{x:1180,y:234,'font-size':44,'font-weight':800,fill:C.ink},card).textContent='The usual way';
+const STEPS=[['Turn the model into a T-pose',S1,S2],['Build IK controls by hand',S2,S3],['Copy the animation back on',S3,PL-.1]];
+const stepG=STEPS.map(([txt],i)=>{const g=el('g',{},card),y=[310,390,640][i];
+  const hl=el('rect',{x:1160,y:y-48,width:620,height:70,rx:14,fill:C.wall},g);
+  el('circle',{cx:1205,cy:y-12,r:26,fill:C.ink},g);
+  el('text',{x:1205,y:y,'text-anchor':'middle','font-size':32,'font-weight':800,fill:C.paper},g).textContent=i+1;
+  const tx=el('text',{x:1250,y:y,'font-size':34,fill:C.ink},g);tx.textContent=txt;return{g,hl,tx}});
+const SUBS=[[7.05,'IK Handle Tool: click hip, then ankle'],[7.85,'Parent the ikHandle under a control'],[8.1,'Add a pole vector, drag it into place'],[9.3,'Repeat for the other leg and both arms']];
+const subG=SUBS.map(([,txt],i)=>{const g=el('g',{},card),y=438+i*40;
+  el('circle',{cx:1262,cy:y-9,r:5,fill:C.ik},g);el('text',{x:1280,y,'font-size':27,fill:C.ink},g).textContent=txt;return g});
+const keyG=el('g',{},card),KEYS=12;
+el('line',{x1:1190,y1:704,x2:1750,y2:704,stroke:C.ink,'stroke-width':4},keyG);
+const keys=[...Array(KEYS)].map((_,i)=>el('polygon',{points:diamond(1210+i*48,704,13),fill:C.hips,stroke:C.ink,'stroke-width':2.5},keyG));
+// the refused drag, mouse cursor
+const nope=el('path',{d:'M-18,-18 L18,18 M18,-18 L-18,18',stroke:C.root,'stroke-width':9,'stroke-linecap':'round'});
+const cursor=el('path',{d:'M0,0 L0,40 L10,30 L17,46 L24,43 L17,28 L30,28 Z',fill:'#fff',stroke:C.ink,'stroke-width':2.5,'stroke-linejoin':'round'});
+
+const caps=captions([
+  [0,TP,'The animation is done — but a foot sinks into the floor'],
+  [TP,U0,'Usually you can’t just grab a bone and drag it'],
+  [U0,PL,'The usual fix: rebuild an IK rig from a T-pose, by hand'],
+  [PL,FX,'The plugin adds IK controls on top of the animation'],
+  [FX,DUR,'Fix feet in the floor or hands in the body — no rigging needed'],
+]);
+// p = walk phase, u = how much of the foot fix is applied
+function state(t){
+  if(t<TP)return{p:t/T,u:0};
+  if(t<FX)return{p:TP/T,u:ease(seg(t,PL+1.5,PL+2.2))};
+  return{p:TP/T+(t-FX)/T,u:1};
+}
+// piecewise eased path through [time,x,y] keys
+function path(K,t){if(t<=K[0][0])return{x:K[0][1],y:K[0][2]};
+  for(let i=1;i<K.length;i++)if(t<=K[i][0]){const u=ease(seg(t,K[i-1][0],K[i][0]));return{x:lerp(K[i-1][1],K[i][1],u),y:lerp(K[i-1][2],K[i][2],u)}}
+  const l=K[K.length-1];return{x:l[1],y:l[2]}}
+const sq=(m,r)=>`${m.x-r},${m.y-r} ${m.x+r},${m.y-r} ${m.x+r},${m.y+r} ${m.x-r},${m.y+r}`;
+let lastCursor={x:0,y:0};
+run(DUR,t=>{
+  showCaps(caps,t);
+  const s=state(t),pose=walkPose(s.p,1,SINK,s.u),a=win(t,0,DUR,.35);
+  const grab=t>=TP&&t<U0,fixed=t>=PL+1.5,usual=t>=U0&&t<PL;
+  // side character hides while the T-pose version is on stage
+  const sideA=usual?clamp(1-seg(t,S1+.05,S1+.35)+seg(t,S3+.45,S3+.75)):1;
+  fig.draw(pose,OX,GY,SC,{boneCol:{nearLeg:fixed?C.mod:grab&&t>3.85&&t<5.0?C.root:undefined}});
+  fig.g.setAttribute('opacity',a*sideA);
+  // T-pose: arms rise (step 1), stay up (step 2), come down (step 3)
+  const armA=lerp(-76,0,ease(seg(t,S1+.45,S1+1.15)))-(t>S3?76*ease(seg(t,S3+.05,S3+.5)):0);
+  front.draw(OX,GY,SC,{arm:armA});
+  set(front.g,{opacity:usual?clamp(seg(t,S1+.1,S1+.4)-seg(t,S3+.4,S3+.7)):0});
+  const P=front.pts,pt=k=>({x:P[k][0],y:P[k][1]});
+
+  // ---- step 2, the long way round, on the viewer's-left leg
+  const hipL=pt('hipL'),ankL=pt('ankL'),kneeL=pt('kneeL');
+  const poleEnd={x:kneeL.x-62,y:kneeL.y},poleStart={x:kneeL.x-230,y:kneeL.y+130};
+  const poleK=[[8.45,poleStart.x,poleStart.y],[8.72,poleEnd.x-44,poleEnd.y-70],[8.92,poleEnd.x+16,poleEnd.y+26],[9.08,poleEnd.x,poleEnd.y]];
+  const poleP=path(poleK,t);
+  set(rig,{opacity:t>=S2&&t<PL?1-seg(t,S3,S3+.2):0});
+  set(sel[0],{cx:hipL.x,cy:hipL.y,opacity:t>=7.05?1:0});set(sel[1],{cx:ankL.x,cy:ankL.y,opacity:t>=7.45?1:0});
+  const g1=ease(seg(t,7.45,7.65));
+  set(ikh,{x1:hipL.x,y1:hipL.y,x2:lerp(hipL.x,ankL.x,g1),y2:lerp(hipL.y,ankL.y,g1),opacity:t>=7.45?1:0});
+  set(ikhL,{x:hipL.x-40,y:hipL.y+30,opacity:seg(t,7.6,7.75)});
+  set(sqL,{points:sq(ankL,17*backOut(seg(t,7.85,8.1))),opacity:t>=7.85?1:0});
+  set(parentL,{d:`M${hipL.x-110},${hipL.y+42} Q${ankL.x-150},${ankL.y-60} ${ankL.x-22},${ankL.y-4}`,opacity:seg(t,7.9,8.05)});
+  const pp=t<8.45?poleStart:poleP,pa=t>=8.1?1:0;
+  set(poleL,{points:diamond(pp.x,pp.y,15*backOut(seg(t,8.1,8.35))),opacity:pa});
+  set(poleLnL,{x1:kneeL.x,y1:kneeL.y,x2:pp.x,y2:pp.y,opacity:pa});
+  REST.forEach(r=>{const on=t>=r.t,u=backOut(seg(t,r.t,r.t+.2));
+    if(r.a){const A=pt(r.a),B=pt(r.b);set(r.line,{x1:A.x,y1:A.y,x2:B.x,y2:B.y,opacity:on?1:0});set(r.mk,{points:sq(B,17*u),opacity:on?1:0})}
+    else{const K=pt(r.pole),m={x:K.x+r.sg*62,y:K.y};set(r.line,{x1:K.x,y1:K.y,x2:m.x,y2:m.y,opacity:on?1:0});set(r.mk,{points:diamond(m.x,m.y,15*u),opacity:on?1:0})}});
+  // click ripples
+  const clicks=[[7.05,hipL],[7.45,ankL],[7.85,ankL],[8.4,poleStart],...REST.map(r=>[r.t,r.a?pt(r.b):{x:pt(r.pole).x+62,y:pt(r.pole).y}])];
+  rips.forEach((c,i)=>{const k=clicks[i];if(!k)return set(c,{opacity:0});const u=seg(t,k[0],k[0]+.35);
+    set(c,{cx:k[1].x,cy:k[1].y,r:12+34*u,opacity:t>=k[0]&&u<1?1-u:0})});
+
+  const M=p=>({x:OX+SC*p.x,y:GY-SC*p.y}),ank=M(pose.nearLeg[2]),toe=M(pose.nearLeg[3]),knee=M(pose.nearLeg[1]),hip=M(pose.hip);
+  // red ring where the foot goes through the floor
+  const depth=Math.max(0,toe.y-GY);
+  set(hit,{cx:(ank.x+toe.x)/2+8,cy:GY,opacity:clamp(depth/12)*a*sideA});
+  // IK control + pole from the plugin
+  const ik=t>=PL+.8?a:0,pop=backOut(seg(t,PL+.8,PL+1.1));
+  set(ctrl,{transform:`translate(${ank.x.toFixed(1)},${ank.y.toFixed(1)}) scale(${pop.toFixed(3)})`,opacity:ik});
+  set(ring,{'fill-opacity':.15+.25*win(t,PL+1.45,PL+2.3,.12)});
+  const mx=(hip.x+ank.x)/2,my=(hip.y+ank.y)/2,dl=Math.hypot(knee.x-mx,knee.y-my)||1,dx=(knee.x-mx)/dl,dy=(knee.y-my)/dl;
+  const px=knee.x+dx*110,py=knee.y+dy*110,pla=t>=PL+1?seg(t,PL+1,PL+1.3)*a:0;
+  set(poleLine,{x1:knee.x+dx*20,y1:knee.y+dy*20,x2:px,y2:py,opacity:pla});set(poleMk,{points:diamond(+px.toFixed(1),+py.toFixed(1),15),opacity:pla});
+  const press=win(t,PL+.5,PL+.75,.06);
+  set(btn,{opacity:t>=PL?seg(t,PL,PL+.3)*a:0});set(btnR,{fill:press>.5?C.ink:C.ik});
+  // card + step highlight + keys
+  set(card,{opacity:win(t,U0,PL,.3)});
+  stepG.forEach((g,i)=>{const [,t0,t1]=STEPS[i],act=t>=t0&&t<t1;
+    set(g.g,{opacity:t<t0?.3:1});set(g.hl,{opacity:act?1:0});set(g.tx,{'font-weight':act?800:400})});
+  subG.forEach((g,i)=>set(g,{opacity:seg(t,SUBS[i][0],SUBS[i][0]+.2)*(t>=S3?.55:1)}));
+  keys.forEach((k,i)=>set(k,{opacity:seg(t,S3+.15+i*.07,S3+.2+i*.07)}));
+  set(keyG,{opacity:t>=S3?1:0});
+  // cursor + tool tag
+  let c=null,sc=1.3;
+  const shin={x:(knee.x+ank.x)/2,y:(knee.y+ank.y)/2};
+  if(grab){                                            // try to drag the shin bone up: nothing moves
+    const k=ease(seg(t,3.3,3.8)),d=ease(seg(t,3.9,4.4));
+    c={x:lerp(shin.x+260,shin.x+6,k),y:lerp(shin.y-40,shin.y+6,k)-90*d+90*ease(seg(t,4.6,4.9)),o:win(t,3.3,5.35,.25)};
+    sc*=1-.12*win(t,3.85,4.9,.1);
+  }else if(t>=6.7&&t<9.25){                            // click joints, parent, add and place the pole vector
+    const K=[[6.75,ankL.x+170,ankL.y-90],[7.02,hipL.x+6,hipL.y+6],[7.42,ankL.x+6,ankL.y+6],[7.82,ankL.x+8,ankL.y+8],
+             [8.38,poleStart.x+6,poleStart.y+6],...poleK.map(([kt,x,y])=>[kt,x+6,y+6]),[9.2,poleEnd.x+60,poleEnd.y+40]];
+    c={...path(K,t),o:win(t,6.75,9.25,.2)};
+    sc*=1-.12*Math.max(win(t,7.0,7.12,.04),win(t,7.4,7.52,.04),win(t,7.8,7.92,.04),win(t,8.38,9.1,.06));
+  }else if(t>=PL&&t<FX){                               // click the button, then drag the new control up
+    const b={x:BTN.x+BTN.w*.62,y:BTN.y+BTN.h*.6};
+    const q=t<PL+1?path([[PL+.1,shin.x+300,shin.y-200],[PL+.5,b.x,b.y]],t):path([[PL+1,b.x,b.y],[PL+1.4,ank.x+6,ank.y+6]],t);
+    if(t>=PL+1.4)Object.assign(q,{x:ank.x+6,y:ank.y+6});
+    c={...q,o:win(t,PL+.05,FX-.05,.3)};sc*=1-.12*Math.max(press,win(t,PL+1.45,PL+2.3,.1));
+  }
+  if(c)lastCursor=c;
+  set(cursor,{transform:`translate(${lastCursor.x.toFixed(1)},${lastCursor.y.toFixed(1)}) scale(${sc.toFixed(3)})`,opacity:c?c.o:0});
+  set(nope,{transform:`translate(${(lastCursor.x+80).toFixed(1)},${(lastCursor.y-50).toFixed(1)})`,opacity:grab?win(t,4.3,5.3,.15):0});
+  const tg=TAGS.find(([t0,t1])=>t>=t0&&t<t1);
+  if(tg){tagT.textContent=tg[2];const w=tagT.getComputedTextLength()+32,tx=Math.min(lastCursor.x+44,1100-w);
+    set(tagR,{width:w});set(tag,{transform:`translate(${tx.toFixed(1)},${(lastCursor.y+52).toFixed(1)})`,opacity:win(t,tg[0],tg[1],.1)})}
+  else set(tag,{opacity:0});
+});
+</script>
+</body>
+</html>

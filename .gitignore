@@ -1,0 +1,18 @@
+__pycache__/
+*.pyc
+
+# Claude Code local data (worktrees, settings)
+.claude/
+
+# Old duplicate copy and the local v1.0 snapshot (use the v1.0 git tag instead)
+mixamo_root_tool/
+releases/
+
+# Presentation: keep the HTML pages and the three GIFs shown in the README
+presentation/v1_dark/
+presentation/persona_avatar.png
+presentation/*.mp4
+presentation/*.gif
+!presentation/02_root.gif
+!presentation/04_ik_on_anim.gif
+!presentation/05_range_edit.gif

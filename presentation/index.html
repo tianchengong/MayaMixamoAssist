@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MayaMixamoAssist Animations</title>
+<style>
+  :root{--bg:#F7E7C8;--paper:#FDF7EA;--ink:#3A2C28;--sub:#8A7864;--line:#D9C3A0;
+        --root:#D8392B;--ik:#3554C2;--fk:#C23A78;--mod:#1F8F7C;--bone:#8B79D4}
+  html,body{margin:0;min-height:100%;background:var(--bg)}
+  body{font-family:"Segoe UI","Helvetica Neue",Helvetica,Arial,sans-serif;color:var(--ink);
+       display:flex;flex-direction:column;align-items:center;padding:6vh 16px;box-sizing:border-box}
+  body::after{content:"";position:fixed;inset:0;pointer-events:none;mix-blend-mode:multiply;opacity:.55;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='320' height='320'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .42 0 0 0 0 .35 0 0 0 0 .22 1.1 0 0 0 -.42'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+  h1{font-size:clamp(28px,3.4vw,52px);font-weight:800;margin:0 0 .3em;text-align:center}
+  .lead{color:var(--sub);font-size:clamp(16px,1.5vw,24px);margin:0 0 5vh;text-align:center}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:22px;width:min(1240px,100%)}
+  a.card{display:block;text-decoration:none;color:inherit;background:var(--paper);border:3px solid var(--line);
+         border-radius:20px;padding:24px 28px 26px;transition:border-color .2s,transform .2s;position:relative}
+  a.card::before{content:"";position:absolute;left:28px;top:0;width:56px;height:8px;background:var(--accent);border-radius:0 0 6px 6px}
+  a.card:hover,a.card:focus-visible{border-color:var(--ink);transform:translateY(-3px);outline:none}
+  .num{font-size:20px;font-weight:800;color:var(--accent);letter-spacing:.08em;margin-top:6px}
+  .card h2{font-size:clamp(22px,2vw,30px);margin:.25em 0 .35em;font-weight:700}
+  .card p{margin:0;color:var(--sub);font-size:clamp(15px,1.2vw,19px);line-height:1.45}
+  .meta{margin-top:14px;font-size:15px;color:var(--sub)}
+  .hint{margin-top:5vh;color:var(--sub);font-size:15px;text-align:center;line-height:1.7}
+  kbd{border:1px solid var(--line);background:var(--paper);border-radius:5px;padding:1px 6px;font-family:inherit}
+  .old{color:var(--sub)}
+</style>
+</head>
+<body>
+  <h1>MayaMixamoAssist &mdash; how it works</h1>
+  <p class="lead">Five short animations and a closing slide. Click one to play it.</p>
+  <div class="grid">
+    <a class="card" href="pipeline.html" style="--accent:var(--root)">
+      <div class="num">01</div><h2>From Mixamo to Unreal</h2>
+      <p>Where the plug-in fits: download from Mixamo, prepare in Maya, use in the game.</p>
+      <div class="meta">10 s loop</div></a>
+    <a class="card" href="root.html" style="--accent:var(--root)">
+      <div class="num">02</div><h2>Root &amp; Root Motion</h2>
+      <p>Add Root, Follow Root and Move Pelvis to Origin.</p>
+      <div class="meta">12 s loop</div></a>
+    <a class="card" href="fk_ik.html" style="--accent:var(--fk)">
+      <div class="num">03</div><h2>FK vs IK</h2>
+      <p>Rotating joints one by one vs. moving the hand directly.</p>
+      <div class="meta">8 s loop</div></a>
+    <a class="card" href="ik_on_anim.html" style="--accent:var(--ik)">
+      <div class="num">04</div><h2>IK on Existing Animation</h2>
+      <p>The usual T-pose + hand-built rig vs. one click: IK controls on a finished animation fix a foot in the floor.</p>
+      <div class="meta">16 s loop</div></a>
+    <a class="card" href="range_edit.html" style="--accent:var(--mod)">
+      <div class="num">05</div><h2>Edit Just a Part</h2>
+      <p>Change a range of frames on a layer that blends in and out.</p>
+      <div class="meta">12 s loop</div></a>
+    <a class="card" href="sleep.html" style="--accent:var(--bone)">
+      <div class="num">06</div><h2>Thank you!</h2>
+      <p>Closing slide: the character yawns, lies down and falls asleep.</p>
+      <div class="meta">12 s loop</div></a>
+  </div>
+  <p class="hint"><kbd>F11</kbd> full screen &nbsp;·&nbsp; <kbd>Space</kbd> pause &nbsp;·&nbsp; <kbd>R</kbd> restart &nbsp;·&nbsp; move the mouse for the &ldquo;&larr; index&rdquo; link</p>
+</body>
+</html>
